@@ -1,0 +1,6 @@
+logs/
+*.pem
+*.log
+node_modules/
+credentials/*
+!credentials/.gitkeep
