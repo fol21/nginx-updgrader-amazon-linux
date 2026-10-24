@@ -147,7 +147,7 @@ function Get-Ec2Targets {
     $awsArgs.Add("--filters")
     $awsArgs.Add("Name=instance-state-name,Values=running")
     $awsArgs.Add("--query")
-    $awsArgs.Add("Reservations[].Instances[].[InstanceId,PublicIpAddress,PrivateIpAddress,Tags[?Key==``Name``]|[0].Value,PlatformDetails]")
+    $awsArgs.Add("Reservations[].Instances[].[InstanceId,PublicIpAddress,PrivateIpAddress,Tags[?Key=='Name']|[0].Value,PlatformDetails]")
     $awsArgs.Add("--output")
     $awsArgs.Add("json")
 
