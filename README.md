@@ -14,15 +14,28 @@ PowerShell helper that lists running EC2 instances with the AWS CLI (or a single
 
 | Path | Role |
 |------|------|
-| `Update-Nginx.ps1` | Orchestrator: AWS list → verify → confirm → SSH/SCP update |
-| `scripts/remote-update-nginx.sh` | Runs on each host (apt or yum/dnf + nginx.org packages) |
+| `Update-Nginx.ps1` | Single file: AWS list → verify → confirm → embedded remote bash via SSH/SCP |
+| `.ebextensions/01_upgrade_nginx.config` | Elastic Beanstalk: run upgrade on each instance during deploy |
+| `.ebextensions/upgrade-nginx.sh` | Same install logic as the bash embedded in `Update-Nginx.ps1` (keep in sync) |
+
+## Elastic Beanstalk
+
+Copy the `.ebextensions/` folder into your application source bundle. On each deploy, every instance runs `upgrade-nginx.sh 1.30.6` (install/upgrade only if needed; still repairs site config when already current).
+
+```text
+your-app/
+  .ebextensions/
+    01_upgrade_nginx.config
+    upgrade-nginx.sh
+  ...
+```
 
 ## Flow
 
 1. **Discover** — list running EC2 instances (or a single `-InstanceIp`)
 2. **Verify** — SSH read-only to each host, read `nginx -v`, print IP / current / target / action, write a log under `logs/`
 3. **Confirm** — ask `Proceed? [y/N]` (skipped with `-Force`)
-4. **Update** — only hosts marked `Install` or `Upgrade` receive the remote script
+4. **Update** — only hosts marked `Install` or `Upgrade` get the embedded remote script (temp file → SCP → SSH)
 
 ## Usage
 
@@ -80,12 +93,14 @@ pwsh ./Update-Nginx.ps1 -PemFile ./my-key.pem -InstanceIp 54.1.2.3 -SshUser ubun
 | `AlreadyCurrent` | already on target; skipped |
 | `SkipUnreachable` | SSH failed; skipped |
 
-## What the remote script does
+## What the embedded remote script does
+
+Logic lives inside `Update-Nginx.ps1` (written to a temp `.sh` before SCP). On each host it:
 
 1. Detects Debian/Ubuntu (`apt`) or Amazon Linux/RHEL (`dnf`/`yum`)
 2. Ensures the [nginx.org](https://nginx.org/en/linux_packages.html) package repo is configured
 3. Installs the package matching the requested version
-4. Verifies `nginx -v` matches the target (no service restart)
+4. Verifies `nginx -v` matches the target (restart only with `-Restart`)
 
 If the exact version is not in the repo cache, the host fails with a non-zero exit and a short list of available versions.
 
