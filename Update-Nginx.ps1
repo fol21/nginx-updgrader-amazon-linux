@@ -138,8 +138,7 @@ write_nginx_apt_repo() {
   codename="${codename:-jammy}"
 
   install -d -m 0755 /usr/share/keyrings
-  curl -fsSL https://nginx.org/keys/nginx_signing.key \
-    | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+  curl -fsSL https://nginx.org/keys/nginx_signing.key | gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
 
   local packages_distro="ubuntu"
   if [[ "$distro" == "debian" ]]; then
@@ -324,6 +323,34 @@ remove_amazon_nginx_pkgs() {
   "$pkg_mgr" remove -y "${to_remove[@]}" || true
 }
 
+# nginx.org amzn2023 RPMs need libssl.so.3(OPENSSL_3.5.0); older AL2023 images ship 3.0/3.2.
+ensure_openssl_for_nginx_org() {
+  local pkg_mgr="$1"
+
+  if [[ "${ID:-}" != "amzn" || "${VERSION_ID:-}" == "2" ]]; then
+    return 0
+  fi
+
+  if rpm -q --provides openssl-libs 2>/dev/null | grep -q 'OPENSSL_3\.5\.0'; then
+    echo "openssl-libs already provides OPENSSL_3.5.0"
+    return 0
+  fi
+
+  echo "nginx.org needs OPENSSL_3.5.0 - updating openssl / openssl-libs from Amazon Linux repos..."
+  if ! "$pkg_mgr" update -y openssl openssl-libs; then
+    echo "WARNING: openssl update failed" >&2
+    return 1
+  fi
+
+  if rpm -q --provides openssl-libs 2>/dev/null | grep -q 'OPENSSL_3\.5\.0'; then
+    echo "openssl-libs now provides OPENSSL_3.5.0"
+    return 0
+  fi
+
+  echo "WARNING: OPENSSL_3.5.0 still missing after update (refresh the AL2023 AMI / repos)" >&2
+  return 1
+}
+
 # Stay on amazonlinux packages when possible (nginx / nginx-core).
 try_amazon_nginx() {
   local pkg_mgr="$1"
@@ -348,19 +375,27 @@ try_dnf_install() {
   local pkg_mgr="$1"
   local flags
   flags="$(dnf_install_flags "$pkg_mgr")"
-
-  remove_amazon_nginx_pkgs "$pkg_mgr"
+  local spec=""
 
   # Prefer wildcard NEVRA match (nginx-1.30.6-1.amzn2023.ngx.x86_64)
   if "$pkg_mgr" list available "nginx-${TARGET}*" 2>/dev/null | grep -qiE 'nginx'; then
-    echo "Installing nginx-${TARGET}* from nginx.org..."
-    # shellcheck disable=SC2086
-    if "$pkg_mgr" install -y $flags "nginx-${TARGET}*"; then
-      return 0
-    fi
+    spec="nginx-${TARGET}*"
+  else
+    spec="nginx-${TARGET}"
   fi
+
+  echo "Resolving deps for ${spec} (downloadonly, before removing distro nginx)..."
   # shellcheck disable=SC2086
-  if "$pkg_mgr" install -y $flags "nginx-${TARGET}"; then
+  if ! "$pkg_mgr" install -y --downloadonly $flags "$spec"; then
+    echo "Cannot install ${spec} (deps unresolved - often OPENSSL_3.5.0 on old AL2023)" >&2
+    return 1
+  fi
+
+  remove_amazon_nginx_pkgs "$pkg_mgr"
+
+  echo "Installing ${spec} from nginx.org..."
+  # shellcheck disable=SC2086
+  if "$pkg_mgr" install -y $flags "$spec"; then
     return 0
   fi
   return 1
@@ -394,16 +429,22 @@ try_direct_rpm() {
       ;;
   esac
 
-  remove_amazon_nginx_pkgs "$pkg_mgr"
-
   local url
   for url in "${candidates[@]}"; do
     echo "Trying direct RPM: ${url}"
-    if curl -fsI "$url" >/dev/null 2>&1; then
-      # shellcheck disable=SC2086
-      if "$pkg_mgr" install -y $flags "$url"; then
-        return 0
-      fi
+    if ! curl -fsI "$url" >/dev/null 2>&1; then
+      continue
+    fi
+    # Resolve deps before removing distro nginx
+    # shellcheck disable=SC2086
+    if ! "$pkg_mgr" install -y --downloadonly $flags "$url"; then
+      echo "Direct RPM deps unresolved for ${url}" >&2
+      continue
+    fi
+    remove_amazon_nginx_pkgs "$pkg_mgr"
+    # shellcheck disable=SC2086
+    if "$pkg_mgr" install -y $flags "$url"; then
+      return 0
     fi
   done
   return 1
@@ -421,7 +462,10 @@ install_rhel() {
     return 0
   fi
 
-  # 2) nginx.org stable - replace conflicting nginx-core via --allowerasing
+  # 2) nginx.org amzn2023 builds need OPENSSL_3.5.0
+  ensure_openssl_for_nginx_org "$pkg_mgr" || true
+
+  # 3) nginx.org stable - replace conflicting nginx-core via --allowerasing
   echo "Configuring nginx.org yum repository (stable)..."
   write_nginx_yum_repo 0
   "$pkg_mgr" -q makecache --refresh || "$pkg_mgr" makecache -q || true
@@ -447,6 +491,9 @@ install_rhel() {
   fi
 
   echo "ERROR: could not install nginx ${TARGET} via ${pkg_mgr}" >&2
+  if [[ "${ID:-}" == "amzn" && "${VERSION_ID:-}" != "2" ]]; then
+    echo "Hint: nginx.org 1.30.x for AL2023 needs libssl OPENSSL_3.5.0 (dnf update openssl openssl-libs, or a newer AL2023 AMI)." >&2
+  fi
   echo "Available nginx packages (sample):" >&2
   "$pkg_mgr" list available 'nginx*' 2>/dev/null | head -40 >&2 || true
   exit 2
@@ -503,16 +550,13 @@ echo "OK"
 function New-TempRemoteUpdateScript {
     $path = Join-Path ([System.IO.Path]::GetTempPath()) ("remote-update-nginx-{0}.sh" -f [guid]::NewGuid().ToString('N'))
     $content = Get-EmbeddedRemoteUpdateScript
-    # Always LF — Windows checkout of this .ps1 must not ship CRLF to Linux
-    $normalized = $content -replace "
-", "
-" -replace "", "
-"
-    if (-not $normalized.EndsWith("
-")) { $normalized += "
-" }
+    # Force LF with char codes (avoid `r/`n escapes that break when this .ps1 is regenerated)
+    $lf = [string][char]10
+    $cr = [string][char]13
+    $normalized = $content.Replace($cr + $lf, $lf).Replace($cr, $lf)
+    if (-not $normalized.EndsWith($lf)) { $normalized += $lf }
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($path, $normalized, $utf8NoBom)
+    [System.IO.File]::WriteAllBytes($path, $utf8NoBom.GetBytes($normalized))
     return $path
 }
 
