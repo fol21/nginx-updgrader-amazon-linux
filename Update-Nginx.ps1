@@ -113,7 +113,7 @@ function Get-EmbeddedRemoteUpdateScript {
     return @'
 #!/usr/bin/env bash
 # Installs/upgrades nginx to a specific version on Debian/Ubuntu or RHEL/Amazon Linux.
-# Keep in sync with .ebextensions/upgrade-nginx.sh (Elastic Beanstalk uses that copy).
+# Keep in sync with the bash embedded in .ebextensions/01_upgrade_nginx.config (EB).
 # Usage: sudo bash remote-update-nginx.sh [VERSION] [restart|norestart] (written to temp by Update-Nginx.ps1)
 set -euo pipefail
 

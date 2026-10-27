@@ -15,18 +15,16 @@ PowerShell helper that lists running EC2 instances with the AWS CLI (or a single
 | Path | Role |
 |------|------|
 | `Update-Nginx.ps1` | Single file: AWS list → verify → confirm → embedded remote bash via SSH/SCP |
-| `.ebextensions/01_upgrade_nginx.config` | Elastic Beanstalk: run upgrade on each instance during deploy |
-| `.ebextensions/upgrade-nginx.sh` | Same install logic as the bash embedded in `Update-Nginx.ps1` (keep in sync) |
+| `.ebextensions/01_upgrade_nginx.config` | Self-contained EB drop-in: embeds + runs the same upgrade logic |
 
 ## Elastic Beanstalk
 
-Copy the `.ebextensions/` folder into your application source bundle. On each deploy, every instance runs `upgrade-nginx.sh 1.30.6` (install/upgrade only if needed; still repairs site config when already current).
+Copy only `.ebextensions/01_upgrade_nginx.config` into your app source bundle. On each deploy it writes the upgrade script and runs `1.30.6` (install only if needed; repairs site config when already current).
 
 ```text
 your-app/
   .ebextensions/
     01_upgrade_nginx.config
-    upgrade-nginx.sh
   ...
 ```
 
