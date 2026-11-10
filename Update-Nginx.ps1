@@ -499,16 +499,26 @@ install_rhel() {
   exit 2
 }
 
-# If already on target version, only fix site config (welcome page / lost includes).
+# version_ge A B: true iff A >= B (sort -V). Spec: tests/test-nginx-version-verify.sh
+# Remote policy: installed >= TARGET -> skip package change (repair only); never downgrade.
+version_ge() {
+  local a b
+  a="${1%%[!0-9.]*}"
+  b="${2%%[!0-9.]*}"
+  [[ -n "$a" && -n "$b" && "$(printf '%s\n' "$a" "$b" | sort -V | head -n1)" == "$b" ]]
+}
+
+# installed >= TARGET -> repair site config only (welcome page / lost includes).
 already_on_target() {
   command -v nginx >/dev/null 2>&1 || return 1
   local installed
   installed="$(nginx -v 2>&1 | sed -n 's/.*nginx\///p')"
-  [[ "$installed" == ${TARGET}* ]]
+  version_ge "$installed" "$TARGET"
 }
 
 if already_on_target; then
-  echo "nginx ${TARGET} already installed - repairing site config only"
+  INSTALLED_NOW="$(nginx -v 2>&1 | sed -n 's/.*nginx\///p')"
+  echo "nginx ${INSTALLED_NOW} (>= ${TARGET}) already installed - repairing site config only"
   backup_nginx_config
   repair_nginx_site_config "$NGINX_CFG_BACKUP"
 else
@@ -527,8 +537,8 @@ echo "=== Installed version ==="
 nginx -v 2>&1
 
 INSTALLED="$(nginx -v 2>&1 | sed -n 's/.*nginx\///p')"
-if [[ "$INSTALLED" != ${TARGET}* ]]; then
-  echo "ERROR: expected nginx ${TARGET}*, got ${INSTALLED:-unknown}" >&2
+if ! version_ge "${INSTALLED:-}" "$TARGET"; then
+  echo "ERROR: expected nginx >= ${TARGET}, got ${INSTALLED:-unknown}" >&2
   exit 4
 fi
 
@@ -749,6 +759,35 @@ function Get-RemoteNginxVersion {
     }
 }
 
+# Parses "1.30.6" (or leading dotted numeric) into [version] for ordered compare.
+function ConvertTo-NginxVersion {
+    param([string]$VersionText)
+    if ($VersionText -match '^(\d+(?:\.\d+){0,3})') {
+        try { return [version]$Matches[1] } catch { return $null }
+    }
+    return $null
+}
+
+# True when Current >= Minimum numerically (1.30.7 >= 1.30.6). Not a string prefix check.
+function Test-NginxVersionAtLeast {
+    param(
+        [string]$Current,
+        [string]$Minimum
+    )
+    $currentVer = ConvertTo-NginxVersion $Current
+    $minimumVer = ConvertTo-NginxVersion $Minimum
+    if ($null -eq $currentVer -or $null -eq $minimumVer) {
+        return $false
+    }
+    return $currentVer -ge $minimumVer
+}
+
+# Verification action from probe vs target. Spec locked by tests/Test-NginxVersionVerify.ps1:
+#   unreachable           -> SkipUnreachable
+#   (not installed)       -> Install
+#   (unknown)             -> Upgrade
+#   installed >= target   -> AlreadyCurrentOrGreater  (keep newer; no downgrade)
+#   installed <  target   -> Upgrade
 function Get-UpdateAction {
     param(
         [string]$CurrentVersion,
@@ -759,7 +798,9 @@ function Get-UpdateAction {
     if (-not $Reachable) { return "SkipUnreachable" }
     if ($CurrentVersion -eq "(not installed)") { return "Install" }
     if ($CurrentVersion -eq "(unknown)") { return "Upgrade" }
-    if ($CurrentVersion -eq $TargetVersion) { return "AlreadyCurrent" }
+    if (Test-NginxVersionAtLeast -Current $CurrentVersion -Minimum $TargetVersion) {
+        return "AlreadyCurrentOrGreater"
+    }
     return "Upgrade"
 }
 
@@ -826,8 +867,8 @@ function Confirm-UpgradeExecution {
     )
 
     $rows = @($VerificationRows | Where-Object { $null -ne $_ -and $_.PSObject.Properties['Action'] })
-    $toUpdate = @($rows | Where-Object { $_.Action -in @("Install", "Upgrade", "AlreadyCurrent") })
-    $already = @($rows | Where-Object { $_.Action -eq "AlreadyCurrent" })
+    $toUpdate = @($rows | Where-Object { $_.Action -in @("Install", "Upgrade", "AlreadyCurrentOrGreater") })
+    $already = @($rows | Where-Object { $_.Action -eq "AlreadyCurrentOrGreater" })
     $unreachable = @($rows | Where-Object { $_.Action -eq "SkipUnreachable" })
 
     Write-Host ""
@@ -1010,7 +1051,7 @@ if (-not $confirmed) {
 }
 
 $toUpdate = @($verification | Where-Object {
-        $null -ne $_ -and $_.PSObject.Properties['Action'] -and ($_.Action -in @("Install", "Upgrade", "AlreadyCurrent"))
+        $null -ne $_ -and $_.PSObject.Properties['Action'] -and ($_.Action -in @("Install", "Upgrade", "AlreadyCurrentOrGreater"))
     })
 
 $localScript = $null

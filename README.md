@@ -15,6 +15,9 @@ PowerShell helper that lists running EC2 instances with the AWS CLI (or a single
 | Path | Role |
 |------|------|
 | `Update-Nginx.ps1` | Single file: AWS list → verify → confirm → embedded remote bash via SSH/SCP |
+| `remote-update-nginx.sh` | Standalone remote payload (same bash as embedded in the `.ps1` / EB) |
+| `tests/Test-NginxVersionVerify.ps1` | Spec-as-code for verify actions (`>=` target → `AlreadyCurrentOrGreater`) |
+| `tests/test-nginx-version-verify.sh` | Spec-as-code for remote `version_ge` (no downgrade) |
 | `.ebextensions/01_upgrade_nginx.config` | Self-contained EB drop-in: embeds + runs the same upgrade logic |
 
 ## Elastic Beanstalk
@@ -88,7 +91,7 @@ pwsh ./Update-Nginx.ps1 -PemFile ./my-key.pem -InstanceIp 54.1.2.3 -SshUser ubun
 |--------|---------|
 | `Install` | nginx not installed; will install target version |
 | `Upgrade` | installed version differs from target |
-| `AlreadyCurrent` | already on target; skipped |
+| `AlreadyCurrentOrGreater` | already on target **or newer** (no downgrade); config repair still runs |
 | `SkipUnreachable` | SSH failed; skipped |
 
 ## What the embedded remote script does
